@@ -56,11 +56,17 @@
     let landData = null;
     let countryData = null; // 【追加】国境線用のデータ
 
-    // 2. 地図データの読み込み (World Atlas)
-    // land-110m.json には land と countries の両方が含まれています。
-    d3.json("https://unpkg.com/world-atlas@2/land-110m.json").then(data => {
+    // 2. 地図データの読み込み
+    // URLを 'countries-110m.json' に変更
+    d3.json("https://unpkg.com/world-atlas@2/countries-110m.json").then(data => {
         landData = topojson.feature(data, data.objects.land);
-        countryData = topojson.feature(data, data.objects.countries); // 【追加】国境線を抽出
+        
+        // 【変更点】featureではなくmeshを使う
+        // mesh: 境界線（line）の集合として取得。
+        // 第3引数のフィルタ (a, b) => a !== b は、「異なる国が接している線（＝内部国境）」のみを残すという意味です。
+        // これにより、海岸線（片側が海である線）は描画されなくなります。
+        countryData = topojson.mesh(data, data.objects.countries, (a, b) => a !== b);
+        
         render();
     });
 
