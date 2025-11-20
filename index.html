@@ -39,32 +39,31 @@
     const context = canvas.getContext("2d");
     const statusDiv = document.getElementById("status");
 
-    // 【修正1】初期サイズを正しく取得し、Canvasの内部解像度にも適用する
     let width = window.innerWidth;
     let height = window.innerHeight;
     canvas.width = width;
     canvas.height = height;
 
-    // 1. 投影法の定義
     const projection = d3.geoMercator()
         .translate([width / 2, height / 2])
         .scale((width / 2) / Math.PI); 
 
     const path = d3.geoPath(projection, context);
 
-    // 状態変数
     let rotation = [135, -35, 0]; // 初期値: 日本付近
     projection.rotate(rotation);
 
     let landData = null;
+    let countryData = null; // 【追加】国境線用のデータ
 
-    // 2. 地図データの読み込み
+    // 2. 地図データの読み込み (World Atlas)
+    // land-110m.json には land と countries の両方が含まれています。
     d3.json("https://unpkg.com/world-atlas@2/land-110m.json").then(data => {
         landData = topojson.feature(data, data.objects.land);
+        countryData = topojson.feature(data, data.objects.countries); // 【追加】国境線を抽出
         render();
     });
 
-    // 3. ドラッグ & ズーム挙動
     const drag = d3.drag()
         .subject(() => {
             const r = projection.rotate();
@@ -74,11 +73,9 @@
             const rotate = projection.rotate();
             
             if (event.sourceEvent.shiftKey) {
-                // Shift + ドラッグ: 第3軸（Gamma/Roll）回転 = 斜軸成分の変更
                 let newGamma = event.subject.gamma + (event.x - event.subject.x) * 0.5;
                 rotation = [rotate[0], rotate[1], newGamma];
             } else {
-                // 通常ドラッグ: 中心位置移動
                 const k = 75 / projection.scale(); 
                 let newLambda = rotate[0] + event.dx * k;
                 let newPhi = rotate[1] - event.dy * k;
@@ -93,7 +90,6 @@
     const zoom = d3.zoom()
         .scaleExtent([50, 5000])
         .on("zoom", (event) => {
-            // D3 v7のzoomイベントからスケールを取得して適用
             projection.scale(event.transform.k);
             render();
         });
@@ -101,12 +97,12 @@
     d3.select(canvas)
         .call(drag)
         .call(zoom)
-        // 初期ズームレベルを現在のprojection.scaleに合わせる
         .call(zoom.transform, d3.zoomIdentity.translate(width / 2, height / 2).scale(projection.scale()).translate(-width / 2, -height / 2));
 
     // 4. 描画ループ
     function render() {
-        if (!landData) return;
+        if (!landData) return; // landData がなければ描画しない
+        // if (!landData || !countryData) return; // 【変更】両方のデータが揃ってから描画することも可能
 
         context.clearRect(0, 0, width, height);
 
@@ -130,19 +126,24 @@
         context.lineWidth = 0.5;
         context.stroke();
 
+        // 【追加】国境線
+        if (countryData) { // 国境線データがあれば描画
+            context.beginPath();
+            path(countryData);
+            context.strokeStyle = "#e0e0e0"; // 国境線の色
+            context.lineWidth = 0.2;         // 国境線の太さ
+            context.stroke();
+        }
+        
         const r = projection.rotate();
         statusDiv.innerText = `Rotate: [${r[0].toFixed(1)}, ${r[1].toFixed(1)}, ${r[2].toFixed(1)}] (Shift+Drag to roll)`;
     }
 
-    // リサイズ対応
     window.addEventListener("resize", () => {
         width = window.innerWidth;
         height = window.innerHeight;
-        
-        // 【修正2】リサイズ時にもCanvas解像度を更新
         canvas.width = width;
         canvas.height = height;
-        
         projection.translate([width / 2, height / 2]);
         render();
     });
