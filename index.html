@@ -39,30 +39,32 @@
     const context = canvas.getContext("2d");
     const statusDiv = document.getElementById("status");
 
+    // 【修正1】初期サイズを正しく取得し、Canvasの内部解像度にも適用する
     let width = window.innerWidth;
     let height = window.innerHeight;
+    canvas.width = width;
+    canvas.height = height;
 
-    // 1. 投影法の定義 (通常のメルカトルを使用)
-    // 斜軸メルカトルは、メルカトルの球面を回転させることで表現します。
+    // 1. 投影法の定義
     const projection = d3.geoMercator()
         .translate([width / 2, height / 2])
-        .scale((width / 2) / Math.PI); // 初期スケール
+        .scale((width / 2) / Math.PI); 
 
     const path = d3.geoPath(projection, context);
 
     // 状態変数
-    let rotation = [135, -35, 0]; // 初期値: 日本付近、回転なし
+    let rotation = [135, -35, 0]; // 初期値: 日本付近
     projection.rotate(rotation);
 
     let landData = null;
 
-    // 2. 地図データの読み込み (World Atlas)
+    // 2. 地図データの読み込み
     d3.json("https://unpkg.com/world-atlas@2/land-110m.json").then(data => {
         landData = topojson.feature(data, data.objects.land);
         render();
     });
 
-    // 3. ドラッグ & ズーム挙動の定義
+    // 3. ドラッグ & ズーム挙動
     const drag = d3.drag()
         .subject(() => {
             const r = projection.rotate();
@@ -72,29 +74,15 @@
             const rotate = projection.rotate();
             
             if (event.sourceEvent.shiftKey) {
-                // ---------------------------------------------------------
-                // 【重要】Shiftキーが押されている場合: 第3軸（Gamma/Roll）を回転
-                // これが「地図を回転させる方向の回転」にあたります。
-                // ---------------------------------------------------------
-                // X方向の動きを回転角度に反映
+                // Shift + ドラッグ: 第3軸（Gamma/Roll）回転 = 斜軸成分の変更
                 let newGamma = event.subject.gamma + (event.x - event.subject.x) * 0.5;
-                
-                // 値を保持しつつ更新 ([yaw, pitch, roll])
                 rotation = [rotate[0], rotate[1], newGamma];
             } else {
-                // ---------------------------------------------------------
-                // 通常ドラッグ: 中心座標（Yaw/Pitch）の移動
-                // ---------------------------------------------------------
-                // D3の標準的な挙動に合わせて感度を調整
-                // メルカトル図法上で直感的に動かすため、スケールに応じた感度調整を入れるのが理想ですが
-                // ここでは簡易的に固定感度で実装しています。
+                // 通常ドラッグ: 中心位置移動
                 const k = 75 / projection.scale(); 
                 let newLambda = rotate[0] + event.dx * k;
                 let newPhi = rotate[1] - event.dy * k;
-                
-                // 緯度の制限 (メルカトルは極で発散するため)
                 newPhi = Math.max(-85, Math.min(85, newPhi));
-
                 rotation = [newLambda, newPhi, rotate[2]];
             }
 
@@ -102,32 +90,31 @@
             render();
         });
 
-    // ズーム挙動
     const zoom = d3.zoom()
         .scaleExtent([50, 5000])
         .on("zoom", (event) => {
+            // D3 v7のzoomイベントからスケールを取得して適用
             projection.scale(event.transform.k);
             render();
         });
 
-    // イベントリスナーの適用
     d3.select(canvas)
         .call(drag)
         .call(zoom)
-        .call(zoom.transform, d3.zoomIdentity.scale(projection.scale()));
+        // 初期ズームレベルを現在のprojection.scaleに合わせる
+        .call(zoom.transform, d3.zoomIdentity.translate(width / 2, height / 2).scale(projection.scale()).translate(-width / 2, -height / 2));
 
     // 4. 描画ループ
     function render() {
         if (!landData) return;
 
-        // 画面クリア
         context.clearRect(0, 0, width, height);
 
-        // 背景（海）
+        // 背景
         context.fillStyle = "#2a2a2a";
         context.fillRect(0, 0, width, height);
 
-        // グリッド線（回転がわかりやすいように表示）
+        // グリッド線
         context.beginPath();
         path(d3.geoGraticule()());
         context.strokeStyle = "#444";
@@ -142,12 +129,7 @@
         context.strokeStyle = "#fff";
         context.lineWidth = 0.5;
         context.stroke();
-        
-        // 地球の輪郭（クリップ領域の目安）
-        // メルカトルは無限平面ですが、回転感覚をつかむため円を表示することもあります
-        // 今回は全画面表示なので省略
 
-        // ステータス表示更新
         const r = projection.rotate();
         statusDiv.innerText = `Rotate: [${r[0].toFixed(1)}, ${r[1].toFixed(1)}, ${r[2].toFixed(1)}] (Shift+Drag to roll)`;
     }
@@ -156,8 +138,11 @@
     window.addEventListener("resize", () => {
         width = window.innerWidth;
         height = window.innerHeight;
+        
+        // 【修正2】リサイズ時にもCanvas解像度を更新
         canvas.width = width;
         canvas.height = height;
+        
         projection.translate([width / 2, height / 2]);
         render();
     });
