@@ -2,11 +2,10 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Interactive Oblique Mercator (Mono)</title>
+    <title>Pole Shift Simulation (Mono)</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://unpkg.com/topojson@3"></script>
     <style>
-        /* 背景を白、文字を黒に変更 */
         body { margin: 0; overflow: hidden; background: #ffffff; color: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
         canvas:active { cursor: grabbing; }
@@ -14,26 +13,50 @@
             position: absolute;
             top: 20px;
             left: 20px;
-            /* パネルも見やすいように白背景・グレー枠線に変更 */
-            background: rgba(255, 255, 255, 0.9);
+            background: rgba(255, 255, 255, 0.95);
             border: 1px solid #ccc;
             padding: 15px;
             border-radius: 8px;
-            pointer-events: none;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            max-width: 300px;
         }
-        /* キーワードの色を濃い青などに変更（白背景で目立つように） */
         .key { color: #0056b3; font-weight: bold; }
+        .input-group { margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; }
+        label { display: block; font-size: 0.85em; margin-bottom: 4px; color: #555; }
+        input[type="number"] { width: 60px; padding: 4px; border: 1px solid #ccc; border-radius: 4px; }
+        button { 
+            margin-top: 10px; padding: 6px 12px; 
+            background: #333; color: #fff; border: none; border-radius: 4px; cursor: pointer; 
+        }
+        button:hover { background: #555; }
     </style>
 </head>
 <body>
 
 <div class="controls">
     <div><span class="key">ドラッグ</span> : 中心位置の移動</div>
-    <div><span class="key">Shift + ドラッグ</span> : 地図の回転 (斜軸角度)</div>
-    <div><span class="key">ホイール</span> : ズーム</div>
-    <div id="status" style="margin-top: 10px; font-size: 0.9em; color: #555;">
-        Rotate: [0, 0, 0]
+    <div><span class="key">Shift + ドラッグ</span> : 地図の回転 (斜軸)</div>
+    
+    <div class="input-group">
+        <strong>ポールシフト設定</strong>
+        <p style="font-size:0.8em; margin:5px 0 10px;">指定した座標を「北極(90°N)」とみなして地殻を移動させます。</p>
+        
+        <div style="display:flex; gap:10px;">
+            <div>
+                <label>新・北極 経度</label>
+                <input type="number" id="poleLon" value="0" step="5">
+            </div>
+            <div>
+                <label>新・北極 緯度</label>
+                <input type="number" id="poleLat" value="90" step="5" max="90" min="-90">
+            </div>
+        </div>
+        <button onclick="applyPoleShift()">設定を適用</button>
+        <button onclick="resetPole()" style="background:#999;">リセット</button>
+    </div>
+
+    <div id="status" style="margin-top: 10px; font-size: 0.8em; color: #555;">
+        View Rotate: [0, 0, 0]
     </div>
 </div>
 
@@ -55,23 +78,78 @@
 
     const path = d3.geoPath(projection, context);
 
-    let rotation = [135, -35, 0]; 
-    projection.rotate(rotation);
+    let viewRotation = [135, -35, 0]; // 視点の回転（日本中心）
+    projection.rotate(viewRotation);
 
-    let landData = null;
-    let borderData = null;
+    // 元データ（変更しない）
+    let rawLand = null;
+    let rawBorders = null;
 
-    // データ読み込み (正しい countries-110m.json を使用)
+    // 表示用データ（ポールシフト計算後）
+    let displayLand = null;
+    let displayBorders = null;
+
     d3.json("https://unpkg.com/world-atlas@2/countries-110m.json").then(data => {
-        // 陸地全体
-        landData = topojson.feature(data, data.objects.land);
+        // 元データをGeoJSONとして保持
+        rawLand = topojson.feature(data, data.objects.land);
+        rawBorders = topojson.mesh(data, data.objects.countries, (a, b) => a !== b);
         
-        // 国境線（内部境界のみ）
-        // 海岸線と重複しないよう、topojson.mesh で a !== b のフィルタをかけます
-        borderData = topojson.mesh(data, data.objects.countries, (a, b) => a !== b);
-        
-        render();
+        // 初回描画（シフトなし）
+        applyPoleShift();
     });
+
+    // --- ポールシフト処理 ---
+    function applyPoleShift() {
+        if (!rawLand) return;
+
+        const lon = parseFloat(document.getElementById("poleLon").value);
+        const lat = parseFloat(document.getElementById("poleLat").value);
+
+        // 地殻を回転させるローテーターを作成
+        // 目標地点(lon, lat)を (0, 90) に持っていく回転を定義
+        // 1. 経度を0にする (-lon)
+        // 2. 緯度を90に持ち上げる (90 - lat)
+        const shiftRotator = d3.geoRotation([-lon, 90 - lat, 0]);
+
+        // GeoJSONの各座標を変換して新しいオブジェクトを作成
+        // (データ量が多いと重くなりますが、110m版なら高速です)
+        
+        // 陸地の変換
+        displayLand = {
+            type: "FeatureCollection",
+            features: rawLand.features.map(f => ({
+                type: "Feature",
+                geometry: {
+                    type: f.geometry.type,
+                    coordinates: transformCoordinates(f.geometry.coordinates, f.geometry.type, shiftRotator)
+                }
+            }))
+        };
+
+        // 国境線の変換 (MultiLineString)
+        displayBorders = {
+            type: "MultiLineString",
+            coordinates: transformCoordinates(rawBorders.coordinates, "MultiLineString", shiftRotator)
+        };
+
+        render();
+    }
+
+    function resetPole() {
+        document.getElementById("poleLon").value = 0;
+        document.getElementById("poleLat").value = 90;
+        applyPoleShift();
+    }
+
+    // 再帰的に座標配列を回転させるヘルパー関数
+    function transformCoordinates(coords, type, rotator) {
+        if (type === "Point") return rotator(coords);
+        if (type === "LineString" || type === "MultiPoint") return coords.map(p => rotator(p));
+        if (type === "Polygon" || type === "MultiLineString") return coords.map(ring => ring.map(p => rotator(p)));
+        if (type === "MultiPolygon") return coords.map(poly => poly.map(ring => ring.map(p => rotator(p))));
+        return coords;
+    }
+    // -----------------------
 
     const drag = d3.drag()
         .subject(() => {
@@ -80,19 +158,17 @@
         })
         .on("drag", (event) => {
             const rotate = projection.rotate();
-            
             if (event.sourceEvent.shiftKey) {
                 let newGamma = event.subject.gamma + (event.x - event.subject.x) * 0.5;
-                rotation = [rotate[0], rotate[1], newGamma];
+                viewRotation = [rotate[0], rotate[1], newGamma];
             } else {
                 const k = 75 / projection.scale(); 
                 let newLambda = rotate[0] + event.dx * k;
                 let newPhi = rotate[1] - event.dy * k;
                 newPhi = Math.max(-85, Math.min(85, newPhi));
-                rotation = [newLambda, newPhi, rotate[2]];
+                viewRotation = [newLambda, newPhi, rotate[2]];
             }
-
-            projection.rotate(rotation);
+            projection.rotate(viewRotation);
             render();
         });
 
@@ -109,45 +185,41 @@
         .call(zoom.transform, d3.zoomIdentity.translate(width / 2, height / 2).scale(projection.scale()).translate(-width / 2, -height / 2));
 
     function render() {
-        if (!landData) return;
-
         context.clearRect(0, 0, width, height);
 
-        // 1. 海（背景）: White
+        // 海: White
         context.fillStyle = "#ffffff";
         context.fillRect(0, 0, width, height);
 
-        // 2. グリッド線: Gray (薄め)
+        // グリッド線 (軸): これは常に「本来の数学的な極」に従います
         context.beginPath();
         path(d3.geoGraticule()());
-        context.strokeStyle = "#cccccc"; // 薄いグレー
+        context.strokeStyle = "#cccccc"; 
         context.lineWidth = 0.5;
         context.stroke();
 
-        // 3. 陸地: Black
-        context.beginPath();
-        path(landData);
-        context.fillStyle = "#000000"; // 真っ黒
-        context.fill();
-        // 陸地の輪郭を描画するかどうか
-        // 黒塗りつぶしの場合、輪郭なしでもOKですが、ズレ防止のため同色で描画しておきます
-        context.strokeStyle = "#000000"; 
-        context.lineWidth = 0.5;
-        context.stroke();
-
-        // 4. 国境線: Gray (陸地が黒なので、白っぽいグレーか、あるいは見えなくて良ければ描画しない)
-        // ★ 陸地が黒(#000)の場合、黒の上にグレーの線を引いても見にくいですが、
-        //    「線はGray」というご要望のため、明るいグレーで描画します。
-        if (borderData) {
+        if (displayLand) {
+            // 陸地: Black
             context.beginPath();
-            path(borderData);
-            context.strokeStyle = "#888888"; // 陸地(黒)の上に乗るので、少し明るめのグレー
+            path(displayLand);
+            context.fillStyle = "#000000";
+            context.fill();
+            context.strokeStyle = "#000000"; 
+            context.lineWidth = 0.5;
+            context.stroke();
+        }
+
+        if (displayBorders) {
+            // 国境線: Gray
+            context.beginPath();
+            path(displayBorders);
+            context.strokeStyle = "#888888";
             context.lineWidth = 0.5;
             context.stroke();
         }
         
         const r = projection.rotate();
-        statusDiv.innerText = `Rotate: [${r[0].toFixed(1)}, ${r[1].toFixed(1)}, ${r[2].toFixed(1)}] (Shift+Drag to roll)`;
+        statusDiv.innerText = `View Rotate: [${r[0].toFixed(1)}, ${r[1].toFixed(1)}, ${r[2].toFixed(1)}]`;
     }
 
     window.addEventListener("resize", () => {
@@ -158,7 +230,6 @@
         projection.translate([width / 2, height / 2]);
         render();
     });
-
 </script>
 </body>
 </html>
