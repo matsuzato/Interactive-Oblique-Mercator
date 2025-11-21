@@ -2,13 +2,17 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Pole Shift Simulation (Mono)</title>
+    <title>Oblique Mercator with 3D Viz</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://unpkg.com/topojson@3"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
     <style>
         body { margin: 0; overflow: hidden; background: #ffffff; color: #000; font-family: sans-serif; }
-        canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
-        canvas:active { cursor: grabbing; }
+        canvas#globe { display: block; width: 100vw; height: 100vh; cursor: grab; }
+        canvas#globe:active { cursor: grabbing; }
+        
+        /* コントロールパネル */
         .controls {
             position: absolute;
             top: 20px;
@@ -17,52 +21,65 @@
             border: 1px solid #ccc;
             padding: 15px;
             border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            max-width: 300px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+            max-width: 280px;
+            z-index: 10; /* 3Dより手前に */
         }
         .key { color: #0056b3; font-weight: bold; }
         .input-group { margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; }
         label { display: block; font-size: 0.85em; margin-bottom: 4px; color: #555; }
         input[type="number"] { width: 60px; padding: 4px; border: 1px solid #ccc; border-radius: 4px; }
         button { 
-            margin-top: 10px; padding: 6px 12px; 
+            margin-top: 10px; padding: 6px 12px; width: 100%;
             background: #333; color: #fff; border: none; border-radius: 4px; cursor: pointer; 
         }
         button:hover { background: #555; }
+
+        /* 3D可視化エリア */
+        #viz-container {
+            margin-top: 15px;
+            width: 100%;
+            height: 180px;
+            background: #f9f9f9;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+        #viz-label {
+            position: absolute;
+            bottom: 5px; right: 5px;
+            font-size: 10px; color: #999;
+        }
     </style>
 </head>
 <body>
 
 <div class="controls">
-    <div><span class="key">ドラッグ</span> : 中心位置の移動</div>
-    <div><span class="key">Shift + ドラッグ</span> : 地図の回転 (斜軸)</div>
+    <div><span class="key">ドラッグ</span> : 移動 (中心変更)</div>
+    <div><span class="key">Shift + ドラッグ</span> : 回転 (斜軸傾斜)</div>
+    <div id="status" style="margin-top: 5px; font-size: 0.8em; color: #555;">Rotate: [0, 0, 0]</div>
+
+    <div id="viz-container">
+        <div id="viz-label">Structure View</div>
+    </div>
     
     <div class="input-group">
-        <strong>ポールシフト設定</strong>
-        <p style="font-size:0.8em; margin:5px 0 10px;">指定した座標を「北極(90°N)」とみなして地殻を移動させます。</p>
-        
-        <div style="display:flex; gap:10px;">
-            <div>
-                <label>新・北極 経度</label>
-                <input type="number" id="poleLon" value="0" step="5">
-            </div>
-            <div>
-                <label>新・北極 緯度</label>
-                <input type="number" id="poleLat" value="90" step="5" max="90" min="-90">
-            </div>
+        <strong>ポールシフト (地殻移動)</strong>
+        <div style="display:flex; gap:10px; margin-top:5px;">
+            <div><label>経度</label><input type="number" id="poleLon" value="0" step="10"></div>
+            <div><label>緯度</label><input type="number" id="poleLat" value="90" step="10" max="90" min="-90"></div>
         </div>
-        <button onclick="applyPoleShift()">設定を適用</button>
-        <button onclick="resetPole()" style="background:#999;">リセット</button>
-    </div>
-
-    <div id="status" style="margin-top: 10px; font-size: 0.8em; color: #555;">
-        View Rotate: [0, 0, 0]
+        <button onclick="applyPoleShift()">適用 / Apply</button>
     </div>
 </div>
 
 <canvas id="globe"></canvas>
 
 <script>
+    // ==========================================
+    // 1. D3.js マップ描画ロジック
+    // ==========================================
     const canvas = document.getElementById("globe");
     const context = canvas.getContext("2d");
     const statusDiv = document.getElementById("status");
@@ -78,43 +95,26 @@
 
     const path = d3.geoPath(projection, context);
 
-    let viewRotation = [135, -35, 0]; // 視点の回転（日本中心）
+    let viewRotation = [135, -35, 0];
     projection.rotate(viewRotation);
 
-    // 元データ（変更しない）
-    let rawLand = null;
-    let rawBorders = null;
+    let rawLand = null, rawBorders = null;
+    let displayLand = null, displayBorders = null;
 
-    // 表示用データ（ポールシフト計算後）
-    let displayLand = null;
-    let displayBorders = null;
-
+    // データ読み込み
     d3.json("https://unpkg.com/world-atlas@2/countries-110m.json").then(data => {
-        // 元データをGeoJSONとして保持
         rawLand = topojson.feature(data, data.objects.land);
         rawBorders = topojson.mesh(data, data.objects.countries, (a, b) => a !== b);
-        
-        // 初回描画（シフトなし）
         applyPoleShift();
     });
 
-    // --- ポールシフト処理 ---
+    // ポールシフト処理
     function applyPoleShift() {
         if (!rawLand) return;
-
         const lon = parseFloat(document.getElementById("poleLon").value);
         const lat = parseFloat(document.getElementById("poleLat").value);
-
-        // 地殻を回転させるローテーターを作成
-        // 目標地点(lon, lat)を (0, 90) に持っていく回転を定義
-        // 1. 経度を0にする (-lon)
-        // 2. 緯度を90に持ち上げる (90 - lat)
         const shiftRotator = d3.geoRotation([-lon, 90 - lat, 0]);
 
-        // GeoJSONの各座標を変換して新しいオブジェクトを作成
-        // (データ量が多いと重くなりますが、110m版なら高速です)
-        
-        // 陸地の変換
         displayLand = {
             type: "FeatureCollection",
             features: rawLand.features.map(f => ({
@@ -125,23 +125,16 @@
                 }
             }))
         };
-
-        // 国境線の変換 (MultiLineString)
         displayBorders = {
             type: "MultiLineString",
             coordinates: transformCoordinates(rawBorders.coordinates, "MultiLineString", shiftRotator)
         };
-
+        
+        // 3Dビューの極軸も更新したい場合ここで行いますが、今回は「投影の仕組み」可視化のため
+        // 3D側は「現在の投影回転」のみを反映させます。
         render();
     }
 
-    function resetPole() {
-        document.getElementById("poleLon").value = 0;
-        document.getElementById("poleLat").value = 90;
-        applyPoleShift();
-    }
-
-    // 再帰的に座標配列を回転させるヘルパー関数
     function transformCoordinates(coords, type, rotator) {
         if (type === "Point") return rotator(coords);
         if (type === "LineString" || type === "MultiPoint") return coords.map(p => rotator(p));
@@ -149,8 +142,109 @@
         if (type === "MultiPolygon") return coords.map(poly => poly.map(ring => ring.map(p => rotator(p))));
         return coords;
     }
-    // -----------------------
 
+    // ==========================================
+    // 2. Three.js 3D構造可視化ロジック
+    // ==========================================
+    const vizContainer = document.getElementById("viz-container");
+    const vizW = vizContainer.clientWidth;
+    const vizH = vizContainer.clientHeight;
+
+    // シーン・カメラ・レンダラー
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf9f9f9); // 薄いグレー背景
+
+    const camera = new THREE.PerspectiveCamera(45, vizW / vizH, 0.1, 100);
+    camera.position.set(0, 0, 3.5); // 少し引いて見る
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(vizW, vizH);
+    vizContainer.appendChild(renderer.domElement);
+
+    // --- オブジェクト作成 ---
+
+    // A. 円筒 (Projection Cylinder) - 固定
+    // 地図の枠を表すため、少し太めの線
+    const cylGeom = new THREE.CylinderGeometry(1.1, 1.1, 2.4, 32, 1, true);
+    const cylEdges = new THREE.EdgesGeometry(cylGeom); // ワイヤーフレーム化
+    const cylinderMesh = new THREE.LineSegments(cylEdges, new THREE.LineBasicMaterial({ color: 0x888888, opacity: 0.3, transparent: true }));
+    // 円筒を横に倒して、赤道が接触するようにする等の表現もありますが、
+    // ここでは「円筒が垂直(画面)で、地球が中で回る」モデルにします。
+    scene.add(cylinderMesh);
+
+    // B. 地球 (Sphere) - 回転する
+    const sphereGroup = new THREE.Group();
+    scene.add(sphereGroup);
+
+    // B-1. 経緯線グリッド
+    const sphereGeom = new THREE.SphereGeometry(1.0, 24, 24);
+    const sphereEdges = new THREE.WireframeGeometry(sphereGeom);
+    const sphereMesh = new THREE.LineSegments(sphereEdges, new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 1 }));
+    sphereGroup.add(sphereMesh);
+
+    // B-2. 赤いライン (投影中心線 = 大円)
+    // 地図の中心を横切る線に対応します
+    const ringGeom = new THREE.TorusGeometry(1.0, 0.01, 16, 100);
+    const ringMesh = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xff0000 }));
+    ringMesh.rotation.x = Math.PI / 2; // 球の赤道に配置
+    // sphereGroupではなくsceneに追加し、円筒と同期させる考え方もありますが、
+    // メルカトル図法では「赤道」が投影中心なので、地球と一緒に回る「地球の赤道」を赤くします。
+    sphereGroup.add(ringMesh);
+    
+    // B-3. 極軸 (Axis)
+    const axisGeom = new THREE.CylinderGeometry(0.02, 0.02, 2.5, 8);
+    const axisMesh = new THREE.Mesh(axisGeom, new THREE.MeshBasicMaterial({ color: 0x0000ff }));
+    sphereGroup.add(axisMesh);
+
+
+    // Three.jsの更新関数
+    function update3DView(rotation) {
+        // D3のrotation: [lambda, phi, gamma] (deg)
+        // lambda: 横回転 (Yaw) -> Y軸
+        // phi: 縦回転 (Pitch) -> X軸
+        // gamma: 画面回転 (Roll) -> Z軸
+        
+        // D3は「視点の回転」ですが、ここでは「地球オブジェクトの姿勢」として表現します。
+        // D3の回転順序とThree.jsのEuler順序を合わせるため、クォータニオンを使うか
+        // 簡易的にEulerで近似します。D3の回転は逆順で適用されます。
+
+        const lambda = rotation[0] * (Math.PI / 180);
+        const phi = rotation[1] * (Math.PI / 180);
+        const gamma = rotation[2] * (Math.PI / 180);
+
+        // 地球の回転を設定
+        // 注意: D3の回転方向とThree.jsの軸方向には反転が必要な場合があります
+        
+        // シンプルなEuler変換 (ZYX順序など試行錯誤が必要ですが、視覚的にマッチする設定にします)
+        sphereGroup.rotation.set(0, 0, 0);
+        
+        // D3のprojection.rotate([L, P, G]) は、
+        // 1. Z軸で G 回転
+        // 2. X軸で P 回転
+        // 3. Y軸で -L 回転 (D3の経度は西が負、東が正だが回転方向定義による)
+        // という「地球を回して中心に持ってくる」操作です。
+        
+        // Three.jsでそれを再現（逆行列的な考え方）
+        // 地球を回転させる:
+        const q = new THREE.Quaternion();
+        const qLambda = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), lambda); // Y
+        const qPhi = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -phi);     // X
+        const qGamma = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -gamma); // Z
+
+        // 回転順序の適用
+        q.multiply(qGamma);
+        q.multiply(qPhi);
+        q.multiply(qLambda);
+        
+        sphereGroup.setRotationFromQuaternion(q);
+
+        renderer.render(scene, camera);
+    }
+
+    // ==========================================
+    // 3. インタラクション & メインループ
+    // ==========================================
+    
     const drag = d3.drag()
         .subject(() => {
             const r = projection.rotate();
@@ -185,32 +279,30 @@
         .call(zoom.transform, d3.zoomIdentity.translate(width / 2, height / 2).scale(projection.scale()).translate(-width / 2, -height / 2));
 
     function render() {
+        // 1. D3描画
         context.clearRect(0, 0, width, height);
-
-        // 海: White
+        
+        // 背景
         context.fillStyle = "#ffffff";
         context.fillRect(0, 0, width, height);
 
-        // グリッド線 (軸): これは常に「本来の数学的な極」に従います
+        // グリッド
         context.beginPath();
         path(d3.geoGraticule()());
-        context.strokeStyle = "#cccccc"; 
+        context.strokeStyle = "#dddddd"; 
         context.lineWidth = 0.5;
         context.stroke();
 
+        // 陸地
         if (displayLand) {
-            // 陸地: Black
             context.beginPath();
             path(displayLand);
             context.fillStyle = "#000000";
             context.fill();
-            context.strokeStyle = "#000000"; 
-            context.lineWidth = 0.5;
-            context.stroke();
         }
 
+        // 国境
         if (displayBorders) {
-            // 国境線: Gray
             context.beginPath();
             path(displayBorders);
             context.strokeStyle = "#888888";
@@ -218,8 +310,12 @@
             context.stroke();
         }
         
+        // テキスト更新
         const r = projection.rotate();
-        statusDiv.innerText = `View Rotate: [${r[0].toFixed(1)}, ${r[1].toFixed(1)}, ${r[2].toFixed(1)}]`;
+        statusDiv.innerText = `View: [${r[0].toFixed(1)}, ${r[1].toFixed(1)}, ${r[2].toFixed(1)}]`;
+
+        // 2. Three.js描画更新
+        update3DView(r);
     }
 
     window.addEventListener("resize", () => {
@@ -230,6 +326,15 @@
         projection.translate([width / 2, height / 2]);
         render();
     });
+
+    // アニメーションループ（ドラッグしていなくても3Dを描画し続けるため）
+    function animate() {
+        requestAnimationFrame(animate);
+        // 通常はrender()内でupdate3DViewを呼ぶのでここは空でも良いが、
+        // Three.js側の継続的な更新が必要なら記述
+    }
+    animate();
+
 </script>
 </body>
 </html>
