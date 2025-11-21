@@ -2,23 +2,28 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Interactive Oblique Mercator</title>
+    <title>Interactive Oblique Mercator (Mono)</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://unpkg.com/topojson@3"></script>
     <style>
-        body { margin: 0; overflow: hidden; background: #1a1a1a; color: white; font-family: sans-serif; }
+        /* 背景を白、文字を黒に変更 */
+        body { margin: 0; overflow: hidden; background: #ffffff; color: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
         canvas:active { cursor: grabbing; }
         .controls {
             position: absolute;
             top: 20px;
             left: 20px;
-            background: rgba(0, 0, 0, 0.7);
+            /* パネルも見やすいように白背景・グレー枠線に変更 */
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ccc;
             padding: 15px;
             border-radius: 8px;
-            pointer-events: none; /* マウスイベントを下のCanvasに通す */
+            pointer-events: none;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
-        .key { color: #4db8ff; font-weight: bold; }
+        /* キーワードの色を濃い青などに変更（白背景で目立つように） */
+        .key { color: #0056b3; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -27,7 +32,7 @@
     <div><span class="key">ドラッグ</span> : 中心位置の移動</div>
     <div><span class="key">Shift + ドラッグ</span> : 地図の回転 (斜軸角度)</div>
     <div><span class="key">ホイール</span> : ズーム</div>
-    <div id="status" style="margin-top: 10px; font-size: 0.9em; color: #aaa;">
+    <div id="status" style="margin-top: 10px; font-size: 0.9em; color: #555;">
         Rotate: [0, 0, 0]
     </div>
 </div>
@@ -50,22 +55,20 @@
 
     const path = d3.geoPath(projection, context);
 
-    let rotation = [135, -35, 0]; // 初期値: 日本付近
+    let rotation = [135, -35, 0]; 
     projection.rotate(rotation);
 
     let landData = null;
-    let countryData = null; // 【追加】国境線用のデータ
+    let borderData = null;
 
-    // 2. 地図データの読み込み
-    // URLを 'countries-110m.json' に変更
+    // データ読み込み (正しい countries-110m.json を使用)
     d3.json("https://unpkg.com/world-atlas@2/countries-110m.json").then(data => {
+        // 陸地全体
         landData = topojson.feature(data, data.objects.land);
         
-        // 【変更点】featureではなくmeshを使う
-        // mesh: 境界線（line）の集合として取得。
-        // 第3引数のフィルタ (a, b) => a !== b は、「異なる国が接している線（＝内部国境）」のみを残すという意味です。
-        // これにより、海岸線（片側が海である線）は描画されなくなります。
-        countryData = topojson.mesh(data, data.objects.countries, (a, b) => a !== b);
+        // 国境線（内部境界のみ）
+        // 海岸線と重複しないよう、topojson.mesh で a !== b のフィルタをかけます
+        borderData = topojson.mesh(data, data.objects.countries, (a, b) => a !== b);
         
         render();
     });
@@ -105,39 +108,41 @@
         .call(zoom)
         .call(zoom.transform, d3.zoomIdentity.translate(width / 2, height / 2).scale(projection.scale()).translate(-width / 2, -height / 2));
 
-    // 4. 描画ループ
     function render() {
-        if (!landData) return; // landData がなければ描画しない
-        // if (!landData || !countryData) return; // 【変更】両方のデータが揃ってから描画することも可能
+        if (!landData) return;
 
         context.clearRect(0, 0, width, height);
 
-        // 背景
-        context.fillStyle = "#2a2a2a";
+        // 1. 海（背景）: White
+        context.fillStyle = "#ffffff";
         context.fillRect(0, 0, width, height);
 
-        // グリッド線
+        // 2. グリッド線: Gray (薄め)
         context.beginPath();
         path(d3.geoGraticule()());
-        context.strokeStyle = "#444";
+        context.strokeStyle = "#cccccc"; // 薄いグレー
         context.lineWidth = 0.5;
         context.stroke();
 
-        // 陸地
+        // 3. 陸地: Black
         context.beginPath();
         path(landData);
-        context.fillStyle = "#69b3a2";
+        context.fillStyle = "#000000"; // 真っ黒
         context.fill();
-        context.strokeStyle = "#fff";
+        // 陸地の輪郭を描画するかどうか
+        // 黒塗りつぶしの場合、輪郭なしでもOKですが、ズレ防止のため同色で描画しておきます
+        context.strokeStyle = "#000000"; 
         context.lineWidth = 0.5;
         context.stroke();
 
-        // 【追加】国境線
-        if (countryData) { // 国境線データがあれば描画
+        // 4. 国境線: Gray (陸地が黒なので、白っぽいグレーか、あるいは見えなくて良ければ描画しない)
+        // ★ 陸地が黒(#000)の場合、黒の上にグレーの線を引いても見にくいですが、
+        //    「線はGray」というご要望のため、明るいグレーで描画します。
+        if (borderData) {
             context.beginPath();
-            path(countryData);
-            context.strokeStyle = "#e0e0e0"; // 国境線の色
-            context.lineWidth = 0.2;         // 国境線の太さ
+            path(borderData);
+            context.strokeStyle = "#888888"; // 陸地(黒)の上に乗るので、少し明るめのグレー
+            context.lineWidth = 0.5;
             context.stroke();
         }
         
